@@ -1,0 +1,6 @@
+name = Database Performance Testing
+description = Test various Database access method speeds and efficiency.
+core = 7.x
+
+dependencies[] = devel
+dependencies[] = devel_generate

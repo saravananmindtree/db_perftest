@@ -1,0 +1,225 @@
+<?php
+
+/**
+ * @file
+ * Database Performance Testing module.
+ *
+ * Note on memory usage measurement: I originally had an elaborate memory
+ * measurement tool in place to try to estimate how many bytes were allocated
+ * for different db access methods, but due to an extremely diverse array of
+ * issues, memory measurement is not all that helpful (and when it's working,
+ * it's often either slightly or wildly incorrect).
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function db_perftest_menu() {
+  $items['admin/config/development/performance/default'] = array(
+    'title' => 'Performance',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'file path' => drupal_get_path('module', 'system'),
+    'weight' => -5,
+  );
+  $items['admin/config/development/performance/db_perftest'] = array(
+    'type' => MENU_LOCAL_TASK,
+    'title' => 'DB Performance Test',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('db_perftest_admin_form'),
+    'access arguments' => array('run db performance tests'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function db_perftest_permission() {
+  return array(
+    'run db performance tests' =>  array(
+      'title' => t('Run DB Performance Tests'),
+      'description' => t('Run database performance tests.'),
+    ),
+  );
+}
+
+/**
+ * Database Performance Test admin form callback.
+ */
+function db_perftest_admin_form($form, &$form_state) {
+  $options = db_perftest_test_run_options();
+
+  $form['tests_to_run'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Functions to test'),
+    '#options' => $options,
+    '#default_value' => array_keys($options),
+  );
+
+  $form['test_run_count'] = array(
+    '#type' => 'select',
+    '#title' => t('Number of test runs to perform'),
+    '#description' => t('One test run offers a fairly weak set of data.'),
+    '#options' => array(
+      1 => '1',
+      5 => '5',
+      10 => '10',
+      25 => '25',
+      100 => '100',
+    ),
+    '#default_value' => array(5),
+  );
+
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+  );
+
+  return $form;
+}
+
+/**
+ * Database Performance Test admin form submit callback.
+ */
+function db_perftest_admin_form_submit($form, &$form_state) {
+  $test_runs = array();
+  $test_run_count = $form_state['values']['test_run_count'] + 1;
+
+  // TODO - Compile and average the results for multiple test runs!
+  for ($i = $test_run_count; $i > 0; $i--) {
+    $results = array();
+
+    // Run each database function performance test and gather the results.
+    foreach ($form_state['values']['tests_to_run'] as $type => $label) {
+      $result = array();
+      $total_time = 0;
+      $total_memory = 0;
+
+      // Start timing.
+      $start_time = microtime(TRUE);
+
+      $function = 'db_perftest_' . $type;
+      $function();
+
+      $total_time = ((microtime(TRUE) - $start_time) * 1000);
+
+      // End timing/memory usage collection.
+      $result['type'] = $label;
+      $result['total_time'] = $total_time;
+      $results[] = $result;
+    }
+
+    // Add to the array of test runs.
+    $test_runs[] = $results;
+  }
+
+  // Throw away the first result (could have memory inaccuracies).
+  array_shift($test_runs);
+
+  // Average all the test runs.
+  $test_run_averages = db_perftest_calculate_test_run_averages($test_runs);
+
+  // Return the performance data using dpm.
+  drupal_set_message(t('Results for @count test runs', array('@count' => $form_state['values']['test_run_count'])));
+  drupal_set_message('<pre>' . print_r($test_run_averages, TRUE) . '</pre>');
+}
+
+/**
+ * Query options for use in selections and as function names.
+ *
+ * @return array
+ *   Array of partial function names mapped to human-readable labels.
+ */
+function db_perftest_test_run_options() {
+  return array(
+    'db_query' => t('db_query() Simple'),
+    'db_select' => t('db_select() Simple'),
+    'efq' => t('EntityFieldQuery Simple'),
+    'db_query_join' => t('db_query() with Joins'),
+    'db_select_join' => t('db_select() with Joins'),
+  );
+}
+
+/**
+ * Calculate averages over multiple test runs.
+ *
+ * @param array $test_runs
+ *   Test run data, in an array.
+ *
+ * @return array
+ *   Test run averages, keyed by type.
+ */
+function db_perftest_calculate_test_run_averages($test_runs) {
+  $options = db_perftest_test_run_options();
+
+  // Down the rabbit hole we go.
+  foreach (array_keys($options) as $type) {
+    $total_time = 0;
+
+    foreach ($test_runs as $test_run) {
+      foreach ($test_run as $key => $run) {
+        if ($run['type'] == $type) {
+          $total_time = $total_time + $run['total_time'];
+        }
+      }
+    }
+
+    $total = count($test_runs);
+    $averages[$options[$type]] = t('@time ms', array('@time' => round($total_time / $total, 3)));
+  }
+
+  return $averages;
+}
+
+/**
+ * Simple db_query() test.
+ */
+function db_perftest_db_query() {
+  return db_query("SELECT nid FROM {node} WHERE type = 'page'")->fetchCol();
+}
+
+/**
+ * Simple db_select() test.
+ */
+function db_perftest_db_select() {
+  return db_select('node', 'n')
+    ->fields('n', array('nid'))
+    ->condition('n.type', 'page')
+    ->execute()
+    ->fetchCol();
+}
+
+/**
+ * Simple EFQ test.
+ */
+function db_perftest_efq() {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'node');
+  $query->entityCondition('bundle', 'page');
+  return $query->execute();
+}
+
+/**
+ * More complex db_query() test with a join.
+ */
+function db_perftest_db_query_join() {
+  return db_query("SELECT n.nid
+    FROM {node} n
+    LEFT JOIN {node_revision} r ON r.nid = n.nid
+    LEFT JOIN {users} u ON u.uid = n.uid
+    WHERE n.type = 'page' AND u.status = 1")->fetchCol();
+}
+
+/**
+ * More complex db_select() test with a join.
+ */
+function db_perftest_db_select_join() {
+  $query = db_select('node', 'n');
+  $query->leftJoin('node_revision', 'r', 'r.nid = n.nid');
+  $query->leftJoin('users', 'u', 'u.uid = n.uid');
+  $query->fields('n', array('nid'))
+    ->condition('n.type', 'page')
+    ->condition('u.status', 1);
+  return $query->execute()->fetchCol();
+}

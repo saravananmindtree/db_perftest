@@ -1,0 +1,26 @@
+<?php
+
+/**
+ * @file
+ * Database Performance Testing install file.
+ */
+
+/**
+ * Implements hook_install().
+ */
+function db_perftest_install() {
+  // Include required file.
+  $path = drupal_get_path('module', 'devel_generate');
+  require_once($path .'/devel_generate.inc');
+
+  // Generate dummy content (sets up a fake $form_state array that works with
+  // devel_generate's devel_generate_content() handler.
+  $values['values']['kill_content'] = FALSE;
+  $values['values']['title_length'] = 12;
+  $values['values']['num_nodes'] = 500;
+  $values['values']['max_comments'] = 0;
+  $values['values']['node_types'] = drupal_map_assoc(array('page', 'article'));
+  devel_generate_content($values);
+
+  watchdog('db_perftest', 'Generated dummy nodes for performance testing.');
+}
